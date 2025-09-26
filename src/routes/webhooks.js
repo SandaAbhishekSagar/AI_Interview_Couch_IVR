@@ -147,11 +147,10 @@ router.post('/response', async (req, res) => {
     // Get user
     const user = await session.getUser();
 
+    // Process response and wait for AI analysis
     if (params.recordingUrl) {
-      // Process recorded response
       await processRecordedResponse(session, user, params);
     } else if (params.transcriptionText) {
-      // Process transcribed response
       await processTranscribedResponse(session, user, params);
     }
 
@@ -160,8 +159,7 @@ router.post('/response', async (req, res) => {
     
     let twiml;
     if (nextQuestion) {
-      const message = `Thank you for that answer. Here's your next question: ${nextQuestion.text}. 
-        Please provide your response.`;
+      const message = `Thank you for that answer. Here's your next question: ${nextQuestion.text}. Please provide your response.`;
       
       twiml = twilioService.generateRecordingTwiML({
         message: message,
@@ -177,6 +175,7 @@ router.post('/response', async (req, res) => {
 
     res.type('text/xml');
     res.send(twiml);
+
   } catch (error) {
     logger.error('Error handling user response:', error);
     
@@ -188,6 +187,7 @@ router.post('/response', async (req, res) => {
     res.send(errorTwiml);
   }
 });
+
 
 // Process recorded response
 async function processRecordedResponse(session, user, params) {
@@ -223,31 +223,34 @@ async function processTranscribedResponse(session, user, params) {
 
     const currentQuestion = questions[responses.length];
     
-    // Analyze response using OpenAI
-    const analysis = await openaiService.analyzeResponse({
-      question: currentQuestion.text,
-      userResponse: transcript,
-      questionCategory: currentQuestion.category,
-      userProfile: user
-    });
+    // PARALLEL PROCESSING: Run analysis simultaneously
+    const [analysis, voiceAnalysis] = await Promise.all([
+      openaiService.analyzeResponse({
+        question: currentQuestion.text,
+        userResponse: transcript,
+        questionCategory: currentQuestion.category,
+        userProfile: user
+      }),
+      Promise.resolve(voiceAnalysisService.analyzeVoice(transcript, 30)) // Voice analysis is synchronous
+    ]);
 
-    // Analyze voice patterns
-    const voiceAnalysis = voiceAnalysisService.analyzeVoice(transcript, 30);
-
-    // Add response to session
-    await session.addResponse({
+    // BATCH DATABASE OPERATIONS: Update everything at once
+    const responseData = {
       questionId: currentQuestion.id,
       text: transcript,
       timestamp: new Date().toISOString(),
       duration: 30, // Estimated duration
       transcription: transcript,
       metrics: voiceAnalysis
-    });
+    };
 
-    // Update session scores
-    await session.updateScores(analysis.scores);
-    await session.updateMetrics(voiceAnalysis.metrics);
-    await session.updateFeedback(analysis.feedback);
+    // Update session with all data in one operation
+    await session.update({
+      responses: [...(session.responses || []), responseData],
+      scores: { ...session.scores, ...analysis.scores },
+      metrics: { ...session.metrics, ...voiceAnalysis.metrics },
+      feedback: { ...session.feedback, ...analysis.feedback }
+    });
 
     logger.info('Response processed successfully', {
       sessionId: session.id,
@@ -375,9 +378,16 @@ function handleRepresentativeTransfer(params) {
   
   const twiml = new (require('twilio')).twiml.VoiceResponse();
   twiml.say(message);
-  // In a real implementation, you would dial a phone number here
-  twiml.dial('+18573959451');
-  //twiml.hangup();
+  
+  // Option 1: Transfer to a real phone number (uncomment and add your number)
+  // twiml.dial('+1234567890'); // Replace with your support number
+  
+  // Option 2: Transfer to another Twilio number
+  // twiml.dial('+15551234567'); // Replace with your support Twilio number
+  
+  // Option 3: For now, provide contact information instead of hanging up
+  twiml.say('For immediate assistance, please call our support line at 1-800-123-4567 or email us at support@yourcompany.com. Thank you for using AI Interview Coaching.');
+  twiml.hangup();
   
   return twiml.toString();
 }

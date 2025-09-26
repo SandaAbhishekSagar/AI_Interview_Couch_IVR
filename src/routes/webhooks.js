@@ -376,8 +376,8 @@ function handleRepresentativeTransfer(params) {
   const twiml = new (require('twilio')).twiml.VoiceResponse();
   twiml.say(message);
   // In a real implementation, you would dial a phone number here
-  // twiml.dial('+1234567890');
-  twiml.hangup();
+  twiml.dial('+18573959451');
+  //twiml.hangup();
   
   return twiml.toString();
 }

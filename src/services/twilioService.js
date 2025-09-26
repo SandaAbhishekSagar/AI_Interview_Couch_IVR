@@ -60,7 +60,8 @@ class TwilioService {
       maxLength = 60,
       finishOnKey = '#',
       language = 'en-US',
-      voice = 'alice'
+      voice = 'alice',
+      timeoutAction = null
     } = options;
 
     const twiml = new twilio.twiml.VoiceResponse();
@@ -71,7 +72,7 @@ class TwilioService {
     }, message);
 
     if (action) {
-      twiml.record({
+      const recordOptions = {
         action: action,
         method: method,
         timeout: timeout,
@@ -79,14 +80,28 @@ class TwilioService {
         finishOnKey: finishOnKey,
         transcribe: true,
         transcribeCallback: action.replace('recording', 'transcription')
-      });
+      };
+
+      // Add timeout action if provided
+      if (timeoutAction) {
+        recordOptions.timeoutAction = timeoutAction;
+      }
+
+      twiml.record(recordOptions);
     } else {
-      twiml.record({
+      const recordOptions = {
         timeout: timeout,
         maxLength: maxLength,
         finishOnKey: finishOnKey,
         transcribe: true
-      });
+      };
+
+      // Add timeout action if provided
+      if (timeoutAction) {
+        recordOptions.timeoutAction = timeoutAction;
+      }
+
+      twiml.record(recordOptions);
     }
 
     return twiml.toString();

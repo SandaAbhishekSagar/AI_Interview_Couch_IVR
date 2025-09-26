@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const { User } = require('../database/models');
-const { generateToken, authenticatePhoneNumber } = require('../middleware/auth');
+const { generateToken, authenticateToken, authenticatePhoneNumber } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
 // Register new user

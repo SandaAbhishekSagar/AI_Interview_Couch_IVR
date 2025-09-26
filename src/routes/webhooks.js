@@ -57,11 +57,11 @@ router.post('/menu', async (req, res) => {
       // Transfer to representative
       response = handleRepresentativeTransfer(params);
     } else {
-      // Invalid selection
+      // Invalid selection or timeout - repeat menu
       response = twilioService.generateTwiMLResponse({
-        message: 'I didn\'t understand that. Please press 1 for mock interview, 2 for coaching tips, or 3 for a representative.',
+        message: 'I didn\'t understand that. Let me repeat the options. Press 1 for a mock interview, press 2 for coaching tips, or press 3 to speak to a representative. What would you like to do?',
         action: `${process.env.WEBHOOK_BASE_URL}/webhook/menu`,
-        timeout: 10
+        timeout: 15
       });
     }
 
@@ -70,9 +70,12 @@ router.post('/menu', async (req, res) => {
   } catch (error) {
     logger.error('Error handling menu selection:', error);
     
-    const errorTwiml = twilioService.generateHangupTwiML(
-      'Sorry, we are experiencing technical difficulties. Please try again later.'
-    );
+    // Don't hang up on errors, repeat the menu
+    const errorTwiml = twilioService.generateTwiMLResponse({
+      message: 'I\'m having trouble understanding. Let me repeat the options. Press 1 for a mock interview, press 2 for coaching tips, or press 3 to speak to a representative. What would you like to do?',
+      action: `${process.env.WEBHOOK_BASE_URL}/webhook/menu`,
+      timeout: 15
+    });
     
     res.type('text/xml');
     res.send(errorTwiml);
@@ -121,7 +124,9 @@ async function handleMockInterviewStart(params) {
       return twilioService.generateRecordingTwiML({
         message: message,
         action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-        timeout: 120
+        timeout: 120,
+        finishOnKey: '#',
+        timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
       });
     } else {
       throw new Error('Failed to generate interview questions');
@@ -164,7 +169,9 @@ router.post('/response', async (req, res) => {
       twiml = twilioService.generateRecordingTwiML({
         message: message,
         action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-        timeout: 120
+        timeout: 120,
+        finishOnKey: '#',
+        timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
       });
     } else {
       // End session
@@ -179,15 +186,79 @@ router.post('/response', async (req, res) => {
   } catch (error) {
     logger.error('Error handling user response:', error);
     
-    const errorTwiml = twilioService.generateHangupTwiML(
-      'Sorry, we encountered an error processing your response. Please try again later.'
-    );
+    // Don't hang up on errors, continue with next question
+    const errorTwiml = twilioService.generateRecordingTwiML({
+      message: 'I had trouble processing your response, but let\'s continue. Here\'s your next question: Tell me about a time when you had to work under pressure. Please provide your response.',
+      action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+      timeout: 120,
+      finishOnKey: '#',
+      timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+    });
     
     res.type('text/xml');
     res.send(errorTwiml);
   }
 });
 
+// Handle response timeout (when user doesn't provide response within time limit)
+router.post('/response-timeout', async (req, res) => {
+  try {
+    const params = twilioService.parseWebhookParams(req);
+    logger.info('Response timeout received', { callSid: params.callSid });
+
+    // Find active session
+    const session = await Session.findActiveByCallSid(params.callSid);
+    if (!session) {
+      throw new Error('No active session found');
+    }
+
+    // Get user
+    const user = await session.getUser();
+
+    // Continue with next question instead of hanging up
+    const responses = session.responses || [];
+    const questions = session.questions || [];
+    
+    if (responses.length < questions.length) {
+      // Still have questions, continue with next one
+      const nextQuestion = questions[responses.length];
+      const message = `No problem, let's continue. Here's your next question: ${nextQuestion.text}. Please provide your response.`;
+      
+      const twiml = twilioService.generateRecordingTwiML({
+        message: message,
+        action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+        timeout: 120,
+        finishOnKey: '#',
+        timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+      });
+      
+      res.type('text/xml');
+      res.send(twiml);
+    } else {
+      // End session gracefully
+      await endMockInterview(session, user);
+      const message = `Thank you for your time. Your mock interview session has ended. Have a great day!`;
+      const twiml = twilioService.generateHangupTwiML(message);
+      
+      res.type('text/xml');
+      res.send(twiml);
+    }
+  } catch (error) {
+    logger.error('Error handling response timeout:', error);
+    
+    // Continue with a fallback question
+    const twiml = twilioService.generateRecordingTwiML({
+      message: 'Let\'s continue with your interview. Here\'s your next question: Tell me about yourself. Please provide your response.',
+      action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+      timeout: 120,
+      finishOnKey: '#',
+      timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+    });
+    
+    res.type('text/xml');
+    res.send(twiml);
+  }
+});
 
 // Process recorded response
 async function processRecordedResponse(session, user, params) {

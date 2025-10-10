@@ -118,7 +118,7 @@ class MurfAIService {
       };
 
     } catch (error) {
-      const duration = Date.now() - startTime;
+      const duration = Date.now() - (startTime || Date.now());
       logger.logApiCall('MurfAI', 'textToSpeech', duration, false);
       logger.error('Failed to convert text to speech with MurfAI:', error);
       
@@ -148,8 +148,9 @@ class MurfAIService {
 
   // Batch convert multiple texts to speech (for pre-generating common messages)
   async batchTextToSpeech(textArray, options = {}) {
+    const startTime = Date.now();
+    
     try {
-      const startTime = Date.now();
       const results = [];
       
       // Process texts in parallel with concurrency limit
@@ -171,7 +172,9 @@ class MurfAIService {
 
       return results;
     } catch (error) {
+      const duration = Date.now() - startTime;
       logger.error('Failed to batch convert texts to speech:', error);
+      logger.error('Batch processing failed after', duration, 'ms');
       throw error;
     }
   }
@@ -286,9 +289,9 @@ class MurfAIService {
 
   // Get list of available voices from MurfAI
   async getAvailableVoices() {
+    const startTime = Date.now();
+    
     try {
-      const startTime = Date.now();
-      
       const response = await axios.get(
         `${this.baseUrl}/voices`,
         {

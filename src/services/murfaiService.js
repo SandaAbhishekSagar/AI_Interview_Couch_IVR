@@ -120,13 +120,13 @@ class MurfAIService {
       let connectionTimeout;
       let receivedData = false;
 
-      // Set connection timeout (10 seconds)
+      // Set connection timeout (30 seconds - enough for audio generation)
       connectionTimeout = setTimeout(() => {
         if (!receivedData) {
           ws.close();
-          reject(new Error('WebSocket connection timeout'));
+          reject(new Error('WebSocket connection timeout - no data received after 30s'));
         }
-      }, 10000);
+      }, 30000);
 
       ws.on('open', () => {
         logger.info('WebSocket connection established');
@@ -214,11 +214,14 @@ class MurfAIService {
 
       ws.on('close', (code, reason) => {
         clearTimeout(connectionTimeout);
-        logger.info('WebSocket connection closed', { code, reason: reason.toString() });
+        const reasonStr = reason ? reason.toString() : 'No reason provided';
+        logger.info('WebSocket connection closed', { code, reason: reasonStr });
         
         // If we didn't get audio data, reject
-        if (audioChunks.length === 0) {
-          reject(new Error('Connection closed without receiving audio data'));
+        if (audioChunks.length === 0 && !receivedData) {
+          reject(new Error(`Connection closed without receiving audio data (code: ${code}, reason: ${reasonStr})`));
+        } else if (audioChunks.length === 0 && receivedData) {
+          reject(new Error('Connection closed after receiving messages but no audio data'));
         }
       });
     });
@@ -242,18 +245,21 @@ class MurfAIService {
     try {
       const results = [];
       
-      // Process texts sequentially to avoid overwhelming WebSocket connections
-      // (MurfAI allows 10x concurrency but let's be conservative)
-      const concurrencyLimit = 3;
-      for (let i = 0; i < textArray.length; i += concurrencyLimit) {
-        const batch = textArray.slice(i, i + concurrencyLimit);
-        const batchResults = await Promise.all(
-          batch.map(text => this.textToSpeech({ text, ...options }).catch(err => {
-            logger.warn(`Failed to generate audio for: "${text.substring(0, 30)}..."`, err.message);
-            return null;
-          }))
-        );
-        results.push(...batchResults.filter(r => r !== null));
+      // Process texts ONE AT A TIME to avoid WebSocket timeout issues
+      // MurfAI WebSocket has 3-minute inactivity timeout, so we must process sequentially
+      logger.info(`Processing ${textArray.length} texts sequentially...`);
+      
+      for (let i = 0; i < textArray.length; i++) {
+        const text = textArray[i];
+        try {
+          logger.info(`Generating audio ${i + 1}/${textArray.length}: "${text.substring(0, 40)}..."`);
+          const result = await this.textToSpeech({ text, ...options });
+          results.push(result);
+          logger.info(`✓ Generated ${i + 1}/${textArray.length}`);
+        } catch (err) {
+          logger.warn(`✗ Failed to generate audio for: "${text.substring(0, 30)}..." - ${err.message}`);
+          // Continue with next message instead of failing completely
+        }
       }
 
       const duration = Date.now() - startTime;
@@ -262,7 +268,7 @@ class MurfAIService {
         successful: results.length,
         failed: textArray.length - results.length,
         duration: duration,
-        averagePerText: Math.round(duration / textArray.length)
+        averagePerText: results.length > 0 ? Math.round(duration / results.length) : 0
       });
 
       return results;
@@ -388,24 +394,17 @@ class MurfAIService {
       return [];
     }
 
+    // Only pre-generate the MOST COMMON messages to reduce startup time
     const commonMessages = [
-      'Welcome to AI Interview Coaching. I\'m your personal interview coach.',
-      'Thank you for that answer.',
       'Thank you for that answer. Please hold while I prepare your next question.',
       'Here\'s your next question.',
-      'Please provide your response.',
-      'Thank you for completing the mock interview.',
-      'Let\'s start your mock interview.',
-      'I didn\'t understand that. Let me repeat the options.',
-      'No problem, let\'s continue.',
-      'Thank you for your time.',
-      'Have a great day!',
       'Thank you for that response. Please hold while I prepare your next question.',
-      'Let me continue with your next question.'
+      'Let me continue with your next question.',
+      'Please provide your response.'
     ];
 
     try {
-      logger.info('Pre-generating common messages...');
+      logger.info(`Pre-generating ${commonMessages.length} most common messages...`);
       const results = await this.batchTextToSpeech(commonMessages, { useCache: true });
       logger.info('Common messages pre-generated successfully', { 
         total: commonMessages.length,

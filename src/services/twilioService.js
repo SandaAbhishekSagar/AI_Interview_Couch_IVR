@@ -1,11 +1,13 @@
 const twilio = require('twilio');
 const logger = require('../utils/logger');
+const murfaiService = require('./murfaiService');
 
 class TwilioService {
   constructor() {
     this.accountSid = process.env.TWILIO_ACCOUNT_SID;
     this.authToken = process.env.TWILIO_AUTH_TOKEN;
     this.phoneNumber = process.env.TWILIO_PHONE_NUMBER;
+    this.useMurfAI = process.env.USE_MURFAI_TTS !== 'false'; // Default to true
     
     if (!this.accountSid || !this.authToken || !this.phoneNumber) {
       throw new Error('Twilio credentials not properly configured');
@@ -14,8 +16,8 @@ class TwilioService {
     this.client = twilio(this.accountSid, this.authToken);
   }
 
-  // Generate TwiML response for voice interactions
-  generateTwiMLResponse(options = {}) {
+  // Generate TwiML response for voice interactions with MurfAI support
+  async generateTwiMLResponse(options = {}) {
     const {
       message = 'Hello, welcome to AI Interview Coaching.',
       action = null,
@@ -23,11 +25,55 @@ class TwilioService {
       timeout = 5,
       speechTimeout = 'auto',
       language = 'en-US',
-      voice = 'alice'
+      voice = 'alice',
+      voiceId = null, // MurfAI voice ID
+      useTTS = this.useMurfAI // Use MurfAI by default
     } = options;
 
     const twiml = new twilio.twiml.VoiceResponse();
-    
+
+    try {
+      // If MurfAI is enabled, generate audio and use play
+      if (useTTS && this.useMurfAI) {
+        try {
+          const audioUrl = await murfaiService.generateAudioUrl(message, { voiceId });
+          
+          if (action) {
+            const gather = twiml.gather({
+              action: action,
+              method: method,
+              timeout: timeout,
+              speechTimeout: speechTimeout,
+              language: language,
+              input: ['speech', 'dtmf']
+            });
+            gather.play(audioUrl);
+          } else {
+            twiml.play(audioUrl);
+          }
+        } catch (error) {
+          logger.error('Failed to generate MurfAI audio, falling back to Twilio TTS:', error);
+          // Fallback to Twilio's built-in TTS
+          this.addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice);
+        }
+      } else {
+        // Use Twilio's built-in TTS
+        this.addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice);
+      }
+    } catch (error) {
+      logger.error('Error generating TwiML response:', error);
+      // Ultimate fallback
+      twiml.say({
+        voice: voice,
+        language: language
+      }, message);
+    }
+
+    return twiml.toString();
+  }
+
+  // Add fallback TTS using Twilio's say command
+  addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice) {
     if (action) {
       twiml.gather({
         action: action,
@@ -46,12 +92,10 @@ class TwilioService {
         language: language
       }, message);
     }
-
-    return twiml.toString();
   }
 
-  // Generate TwiML for recording
-  generateRecordingTwiML(options = {}) {
+  // Generate TwiML for recording with MurfAI support
+  async generateRecordingTwiML(options = {}) {
     const {
       message = 'Please speak your answer now.',
       action = null,
@@ -61,34 +105,34 @@ class TwilioService {
       finishOnKey = '#',
       language = 'en-US',
       voice = 'alice',
-      timeoutAction = null
+      voiceId = null, // MurfAI voice ID
+      timeoutAction = null,
+      useTTS = this.useMurfAI
     } = options;
 
     const twiml = new twilio.twiml.VoiceResponse();
-    
-    twiml.say({
-      voice: voice,
-      language: language
-    }, message);
 
-    if (action) {
-      const recordOptions = {
-        action: action,
-        method: method,
-        timeout: timeout,
-        maxLength: maxLength,
-        finishOnKey: finishOnKey,
-        transcribe: true,
-        transcribeCallback: action.replace('recording', 'transcription')
-      };
-
-      // Add timeout action if provided
-      if (timeoutAction) {
-        recordOptions.timeoutAction = timeoutAction;
+    try {
+      // Generate audio message with MurfAI or Twilio TTS
+      if (useTTS && this.useMurfAI) {
+        try {
+          const audioUrl = await murfaiService.generateAudioUrl(message, { voiceId });
+          twiml.play(audioUrl);
+        } catch (error) {
+          logger.error('Failed to generate MurfAI audio, falling back to Twilio TTS:', error);
+          twiml.say({
+            voice: voice,
+            language: language
+          }, message);
+        }
+      } else {
+        twiml.say({
+          voice: voice,
+          language: language
+        }, message);
       }
 
-      twiml.record(recordOptions);
-    } else {
+      // Add recording directive
       const recordOptions = {
         timeout: timeout,
         maxLength: maxLength,
@@ -96,38 +140,122 @@ class TwilioService {
         transcribe: true
       };
 
-      // Add timeout action if provided
+      if (action) {
+        recordOptions.action = action;
+        recordOptions.method = method;
+        recordOptions.transcribeCallback = action.replace('recording', 'transcription');
+      }
+
       if (timeoutAction) {
         recordOptions.timeoutAction = timeoutAction;
       }
 
       twiml.record(recordOptions);
+    } catch (error) {
+      logger.error('Error generating recording TwiML:', error);
+      // Fallback TwiML
+      twiml.say({
+        voice: voice,
+        language: language
+      }, message);
+      twiml.record({
+        timeout: timeout,
+        maxLength: maxLength,
+        finishOnKey: finishOnKey,
+        transcribe: true
+      });
     }
 
     return twiml.toString();
   }
 
-  // Generate TwiML for hangup
-  generateHangupTwiML(message = 'Thank you for using AI Interview Coaching. Goodbye!') {
+  // Generate TwiML for hangup with MurfAI support
+  async generateHangupTwiML(message = 'Thank you for using AI Interview Coaching. Goodbye!', options = {}) {
+    const {
+      voice = 'alice',
+      language = 'en-US',
+      voiceId = null,
+      useTTS = this.useMurfAI
+    } = options;
+
     const twiml = new twilio.twiml.VoiceResponse();
-    twiml.say({
-      voice: 'alice',
-      language: 'en-US'
-    }, message);
-    twiml.hangup();
-    
+
+    try {
+      // Generate audio message with MurfAI or Twilio TTS
+      if (useTTS && this.useMurfAI) {
+        try {
+          const audioUrl = await murfaiService.generateAudioUrl(message, { voiceId });
+          twiml.play(audioUrl);
+        } catch (error) {
+          logger.error('Failed to generate MurfAI audio, falling back to Twilio TTS:', error);
+          twiml.say({
+            voice: voice,
+            language: language
+          }, message);
+        }
+      } else {
+        twiml.say({
+          voice: voice,
+          language: language
+        }, message);
+      }
+
+      twiml.hangup();
+    } catch (error) {
+      logger.error('Error generating hangup TwiML:', error);
+      // Fallback TwiML
+      twiml.say({
+        voice: voice,
+        language: language
+      }, message);
+      twiml.hangup();
+    }
+
     return twiml.toString();
   }
 
   // Generate TwiML for hold music
-  generateHoldTwiML(message = 'Please wait while we process your request.') {
+  async generateHoldTwiML(message = 'Please wait while we process your request.', options = {}) {
+    const {
+      voice = 'alice',
+      language = 'en-US',
+      voiceId = null,
+      useTTS = this.useMurfAI
+    } = options;
+
     const twiml = new twilio.twiml.VoiceResponse();
-    twiml.say({
-      voice: 'alice',
-      language: 'en-US'
-    }, message);
-    twiml.play('https://demo.twilio.com/docs/classic.mp3');
-    
+
+    try {
+      // Generate audio message with MurfAI or Twilio TTS
+      if (useTTS && this.useMurfAI) {
+        try {
+          const audioUrl = await murfaiService.generateAudioUrl(message, { voiceId });
+          twiml.play(audioUrl);
+        } catch (error) {
+          logger.error('Failed to generate MurfAI audio, falling back to Twilio TTS:', error);
+          twiml.say({
+            voice: voice,
+            language: language
+          }, message);
+        }
+      } else {
+        twiml.say({
+          voice: voice,
+          language: language
+        }, message);
+      }
+
+      twiml.play('https://demo.twilio.com/docs/classic.mp3');
+    } catch (error) {
+      logger.error('Error generating hold TwiML:', error);
+      // Fallback TwiML
+      twiml.say({
+        voice: voice,
+        language: language
+      }, message);
+      twiml.play('https://demo.twilio.com/docs/classic.mp3');
+    }
+
     return twiml.toString();
   }
 
@@ -271,6 +399,14 @@ class TwilioService {
       transcriptionText: req.body.TranscriptionText,
       transcriptionStatus: req.body.TranscriptionStatus
     };
+  }
+
+  // Pre-generate common audio messages for better performance
+  async preGenerateCommonMessages() {
+    if (this.useMurfAI) {
+      logger.info('Pre-generating common messages with MurfAI...');
+      await murfaiService.preGenerateCommonMessages();
+    }
   }
 }
 

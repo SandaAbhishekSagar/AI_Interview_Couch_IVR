@@ -12,7 +12,8 @@ A comprehensive AI-powered Interactive Voice Response (IVR) system for interview
 - **Multi-Industry Support**: Customized questions for different industries and experience levels
 
 ### Technical Features
-- **Twilio Integration**: Voice handling, speech-to-text, and text-to-speech
+- **Twilio Integration**: Voice handling and speech-to-text
+- **MurfAI TTS**: High-quality text-to-speech conversion with natural voices
 - **OpenAI GPT-4**: Intelligent question generation and response analysis
 - **Voice Analysis**: Speech rate, filler words, confidence assessment, and clarity evaluation
 - **Database Tracking**: Comprehensive user profiles, session history, and progress analytics
@@ -24,6 +25,7 @@ A comprehensive AI-powered Interactive Voice Response (IVR) system for interview
 - **Node.js** with Express.js
 - **PostgreSQL** database with Sequelize ORM
 - **Twilio** for voice communications
+- **MurfAI** for text-to-speech
 - **OpenAI GPT-4** for AI analysis
 - **JWT** authentication
 - **Winston** logging
@@ -37,6 +39,7 @@ src/
 │   └── models/              # Sequelize models
 ├── services/
 │   ├── twilioService.js     # Twilio API integration
+│   ├── murfaiService.js     # MurfAI TTS integration
 │   ├── openaiService.js     # OpenAI API integration
 │   └── voiceAnalysisService.js # Voice analysis algorithms
 ├── routes/
@@ -44,6 +47,7 @@ src/
 │   ├── users.js            # User management
 │   ├── sessions.js         # Session management
 │   ├── webhooks.js         # Twilio webhooks
+│   ├── audio.js            # Audio file serving
 │   └── health.js           # Health checks
 └── middleware/
     ├── auth.js             # JWT authentication
@@ -56,6 +60,7 @@ src/
 - Node.js 18+ 
 - PostgreSQL database
 - Twilio account with phone number
+- MurfAI API key (for text-to-speech)
 - OpenAI API key
 
 ### Installation
@@ -82,6 +87,12 @@ Edit `.env` with your configuration:
 TWILIO_ACCOUNT_SID=your_twilio_account_sid
 TWILIO_AUTH_TOKEN=your_twilio_auth_token
 TWILIO_PHONE_NUMBER=+1234567890
+
+# MurfAI Configuration (Text-to-Speech)
+MURF_API_KEY=your_murf_api_key
+MURF_API_URL=https://api.murf.ai/v1
+MURF_DEFAULT_VOICE=en-US-natalie
+USE_MURFAI_TTS=true
 
 # OpenAI Configuration
 OPENAI_API_KEY=your_openai_api_key
@@ -247,6 +258,7 @@ railway add postgresql
 ```bash
 railway variables set TWILIO_ACCOUNT_SID=your_sid
 railway variables set TWILIO_AUTH_TOKEN=your_token
+railway variables set MURF_API_KEY=your_murf_key
 railway variables set OPENAI_API_KEY=your_key
 railway variables set JWT_SECRET=your_secret
 railway variables set WEBHOOK_BASE_URL=https://your-app.railway.app
@@ -264,6 +276,10 @@ railway up
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID | Yes |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token | Yes |
 | `TWILIO_PHONE_NUMBER` | Twilio Phone Number | Yes |
+| `MURF_API_KEY` | MurfAI API Key for TTS | Yes |
+| `MURF_API_URL` | MurfAI API Base URL | No (defaults to https://api.murf.ai/v1) |
+| `MURF_DEFAULT_VOICE` | Default MurfAI Voice ID | No (defaults to en-US-natalie) |
+| `USE_MURFAI_TTS` | Enable/disable MurfAI TTS | No (defaults to true) |
 | `OPENAI_API_KEY` | OpenAI API Key | Yes |
 | `DATABASE_URL` | PostgreSQL Connection URL | Yes |
 | `JWT_SECRET` | JWT Secret Key | Yes |
@@ -383,9 +399,10 @@ For support and questions:
 
 ### Monthly Costs (Estimated)
 - **Twilio**: $20-50 (depending on call volume)
+- **MurfAI**: $19-99 (depending on characters used, free tier: 100K chars)
 - **OpenAI**: $30-100 (depending on API usage)
 - **Railway**: $5-20 (hosting and database)
-- **Total**: ~$55-170/month
+- **Total**: ~$74-269/month
 
 ### Cost Optimization
 - Implement caching for common responses

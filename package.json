@@ -9,7 +9,10 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "migrate": "node src/database/migrate.js",
-    "seed": "node src/database/seed.js"
+    "seed": "node src/database/seed.js",
+    "test:murfai": "node scripts/test-murfai.js",
+    "pregenerate:audio": "node scripts/pregenerate-audio.js",
+    "clear:cache": "node scripts/clear-audio-cache.js"
   },
   "keywords": ["ivr", "ai", "interview", "coaching", "twilio", "openai"],
   "author": "AI Interview Coaching System",

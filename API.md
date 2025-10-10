@@ -574,6 +574,47 @@ Handle user responses to interview questions.
 #### POST /webhook/status
 Handle call status updates.
 
+### Audio Endpoints (MurfAI Integration)
+
+#### GET /audio/:filename
+Serve generated audio files for Twilio playback.
+
+**URL Parameters:**
+- `filename` - Audio file name (e.g., `abc123def456.mp3`)
+
+**Response:**
+Binary audio data with appropriate content-type headers.
+
+**Headers:**
+```
+Content-Type: audio/mpeg (for MP3) or audio/wav (for WAV)
+Cache-Control: public, max-age=86400
+Access-Control-Allow-Origin: *
+```
+
+**Example:**
+```
+GET /audio/abc123def456.mp3
+```
+
+#### GET /audio
+List all cached audio files (for management purposes).
+
+**Response:**
+```json
+{
+  "count": 15,
+  "files": [
+    {
+      "filename": "abc123def456.mp3",
+      "size": 45678,
+      "created": "2024-01-01T00:00:00.000Z",
+      "modified": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
 ## Error Responses
 
 All endpoints return consistent error responses:

@@ -15,6 +15,7 @@ const webhookRoutes = require('./routes/webhooks');
 const userRoutes = require('./routes/users');
 const sessionRoutes = require('./routes/sessions');
 const healthRoutes = require('./routes/health');
+const audioRoutes = require('./routes/audio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -64,6 +65,7 @@ app.use('/webhook', webhookRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sessions', sessionRoutes);
+app.use('/audio', audioRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -102,6 +104,15 @@ async function startServer() {
     // Sync database models
     await database.sync({ alter: process.env.NODE_ENV === 'development' });
     logger.info('Database models synchronized');
+
+    // Pre-generate common MurfAI messages (don't block server startup)
+    if (process.env.USE_MURFAI_TTS !== 'false' && process.env.MURF_API_KEY) {
+      logger.info('Pre-generating common MurfAI messages in background...');
+      const twilioService = require('./services/twilioService');
+      twilioService.preGenerateCommonMessages().catch(error => {
+        logger.warn('Failed to pre-generate messages (will generate on demand):', error.message);
+      });
+    }
 
     // Start server
     app.listen(PORT, () => {

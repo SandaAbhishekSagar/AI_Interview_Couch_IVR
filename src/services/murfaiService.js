@@ -1,13 +1,12 @@
-const axios = require('axios');
+const WebSocket = require('ws');
 const logger = require('../utils/logger');
 const fs = require('fs').promises;
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
 
 class MurfAIService {
   constructor() {
     this.apiKey = process.env.MURF_API_KEY;
-    this.baseUrl = process.env.MURF_API_URL || 'https://api.murf.ai/v1';
+    this.wsUrl = 'wss://api.murf.ai/v1/speech/stream-input';
     this.outputDir = path.join(__dirname, '../../temp/audio');
     this.publicAudioUrl = process.env.WEBHOOK_BASE_URL || '';
     
@@ -29,15 +28,16 @@ class MurfAIService {
     }
   }
 
-  // Convert text to speech using MurfAI API
+  // Convert text to speech using MurfAI WebSocket API
   async textToSpeech(options = {}) {
     const {
       text,
       voiceId = process.env.MURF_DEFAULT_VOICE || 'en-US-natalie',
-      format = 'MP3',
+      format = 'WAV',
       sampleRate = 24000,
       pitch = 0,
       speed = 0,
+      style = 'Conversational',
       useCache = true
     } = options;
 
@@ -65,60 +65,27 @@ class MurfAIService {
         }
       }
 
-      // Make API request to MurfAI
-      const response = await axios.post(
-        `${this.baseUrl}/text-to-speech/generate`,
-        {
-          text: text,
-          voiceId: voiceId,
-          format: format,
-          sampleRate: sampleRate,
-          pitch: pitch,
-          speed: speed,
-          audioSettings: {
-            format: format.toLowerCase(),
-            sampleRate: sampleRate
-          }
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 8000 // 8 second timeout (leaves 2 seconds for other processing)
-        }
-      );
+      // Generate audio using WebSocket
+      const audioData = await this.generateAudioViaWebSocket(text, {
+        voiceId,
+        sampleRate,
+        pitch,
+        speed,
+        style
+      });
 
       const duration = Date.now() - startTime;
       logger.logApiCall('MurfAI', 'textToSpeech', duration, true);
 
-      // Handle the response
-      let audioUrl;
-      let audioData;
-
-      if (response.data.audioFile) {
-        // If audio file is returned as base64 or binary data
-        audioData = Buffer.from(response.data.audioFile, 'base64');
-        audioUrl = await this.saveAudioFile(audioData, cacheKey, format);
-      } else if (response.data.audioUrl) {
-        // If audio URL is returned
-        audioUrl = response.data.audioUrl;
-        
-        // Optionally download and cache the audio
-        if (useCache) {
-          audioData = await this.downloadAudio(audioUrl);
-          audioUrl = await this.saveAudioFile(audioData, cacheKey, format);
-        }
-      } else {
-        throw new Error('Invalid response from MurfAI API - no audio data or URL');
-      }
+      // Save audio file
+      const audioUrl = await this.saveAudioFile(audioData, cacheKey, format);
 
       return {
         audioUrl: audioUrl,
         audioData: audioData,
         text: text,
         voiceId: voiceId,
-        duration: response.data.duration || 0,
+        duration: duration,
         cacheKey: cacheKey
       };
 
@@ -126,18 +93,135 @@ class MurfAIService {
       const duration = Date.now() - startTime;
       logger.logApiCall('MurfAI', 'textToSpeech', duration, false);
       logger.error('Failed to convert text to speech with MurfAI:', error);
-      
-      // Provide more detailed error information
-      if (error.response) {
-        logger.error('MurfAI API Error:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data
-        });
-      }
-      
       throw error;
     }
+  }
+
+  // Generate audio via WebSocket streaming
+  async generateAudioViaWebSocket(text, options = {}) {
+    const {
+      voiceId = 'en-US-natalie',
+      sampleRate = 24000,
+      pitch = 0,
+      speed = 0,
+      style = 'Conversational'
+    } = options;
+
+    return new Promise((resolve, reject) => {
+      const channelType = 'MONO';
+      const format = 'WAV';
+      const wsUrl = `${this.wsUrl}?api-key=${this.apiKey}&sample_rate=${sampleRate}&channel_type=${channelType}&format=${format}`;
+      
+      logger.info('Connecting to MurfAI WebSocket...', { voiceId, sampleRate });
+      
+      const ws = new WebSocket(wsUrl);
+      const audioChunks = [];
+      let firstChunk = true;
+      let connectionTimeout;
+      let receivedData = false;
+
+      // Set connection timeout (10 seconds)
+      connectionTimeout = setTimeout(() => {
+        if (!receivedData) {
+          ws.close();
+          reject(new Error('WebSocket connection timeout'));
+        }
+      }, 10000);
+
+      ws.on('open', () => {
+        logger.info('WebSocket connection established');
+        
+        try {
+          // Send voice configuration
+          const voiceConfig = {
+            voice_config: {
+              voiceId: voiceId,
+              style: style,
+              rate: speed,
+              pitch: pitch,
+              variation: 1
+            }
+          };
+          
+          logger.info('Sending voice config:', voiceConfig);
+          ws.send(JSON.stringify(voiceConfig));
+
+          // Send text message
+          const textMessage = {
+            text: text,
+            end: true // Close context after this text
+          };
+          
+          logger.info('Sending text message');
+          ws.send(JSON.stringify(textMessage));
+          
+        } catch (error) {
+          clearTimeout(connectionTimeout);
+          ws.close();
+          reject(error);
+        }
+      });
+
+      ws.on('message', (data) => {
+        receivedData = true;
+        clearTimeout(connectionTimeout);
+        
+        try {
+          const response = JSON.parse(data.toString());
+          logger.info('Received WebSocket message:', { 
+            hasAudio: !!response.audio, 
+            final: response.final 
+          });
+
+          if (response.audio) {
+            // Decode base64 audio
+            const audioBytes = Buffer.from(response.audio, 'base64');
+            
+            // Skip WAV header (44 bytes) only for first chunk
+            if (firstChunk && audioBytes.length > 44) {
+              audioChunks.push(audioBytes.slice(44));
+              firstChunk = false;
+            } else {
+              audioChunks.push(audioBytes);
+            }
+          }
+
+          // Check if this is the final message
+          if (response.final) {
+            ws.close();
+            
+            // Combine all audio chunks
+            const fullAudio = Buffer.concat(audioChunks);
+            logger.info('Audio generation completed', { 
+              chunks: audioChunks.length, 
+              totalBytes: fullAudio.length 
+            });
+            
+            resolve(fullAudio);
+          }
+        } catch (error) {
+          logger.error('Error processing WebSocket message:', error);
+          ws.close();
+          reject(error);
+        }
+      });
+
+      ws.on('error', (error) => {
+        clearTimeout(connectionTimeout);
+        logger.error('WebSocket error:', error);
+        reject(error);
+      });
+
+      ws.on('close', (code, reason) => {
+        clearTimeout(connectionTimeout);
+        logger.info('WebSocket connection closed', { code, reason: reason.toString() });
+        
+        // If we didn't get audio data, reject
+        if (audioChunks.length === 0) {
+          reject(new Error('Connection closed without receiving audio data'));
+        }
+      });
+    });
   }
 
   // Convert text to speech and return audio URL for Twilio
@@ -158,19 +242,25 @@ class MurfAIService {
     try {
       const results = [];
       
-      // Process texts in parallel with concurrency limit
-      const concurrencyLimit = 5;
+      // Process texts sequentially to avoid overwhelming WebSocket connections
+      // (MurfAI allows 10x concurrency but let's be conservative)
+      const concurrencyLimit = 3;
       for (let i = 0; i < textArray.length; i += concurrencyLimit) {
         const batch = textArray.slice(i, i + concurrencyLimit);
         const batchResults = await Promise.all(
-          batch.map(text => this.textToSpeech({ text, ...options }))
+          batch.map(text => this.textToSpeech({ text, ...options }).catch(err => {
+            logger.warn(`Failed to generate audio for: "${text.substring(0, 30)}..."`, err.message);
+            return null;
+          }))
         );
-        results.push(...batchResults);
+        results.push(...batchResults.filter(r => r !== null));
       }
 
       const duration = Date.now() - startTime;
       logger.info('Batch TTS completed', {
         count: textArray.length,
+        successful: results.length,
+        failed: textArray.length - results.length,
         duration: duration,
         averagePerText: Math.round(duration / textArray.length)
       });
@@ -185,7 +275,7 @@ class MurfAIService {
   }
 
   // Save audio file to temp directory and return public URL
-  async saveAudioFile(audioData, cacheKey, format = 'mp3') {
+  async saveAudioFile(audioData, cacheKey, format = 'wav') {
     try {
       const filename = `${cacheKey}.${format.toLowerCase()}`;
       const filepath = path.join(this.outputDir, filename);
@@ -195,26 +285,11 @@ class MurfAIService {
       // Return public URL for Twilio to access
       const publicUrl = `${this.publicAudioUrl}/audio/${filename}`;
       
-      logger.info('Audio file saved', { filename, publicUrl });
+      logger.info('Audio file saved', { filename, size: audioData.length, publicUrl });
       
       return publicUrl;
     } catch (error) {
       logger.error('Failed to save audio file:', error);
-      throw error;
-    }
-  }
-
-  // Download audio from URL
-  async downloadAudio(url) {
-    try {
-      const response = await axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 30000
-      });
-      
-      return Buffer.from(response.data);
-    } catch (error) {
-      logger.error('Failed to download audio:', error);
       throw error;
     }
   }
@@ -233,7 +308,7 @@ class MurfAIService {
   // Get cached audio if exists
   async getCachedAudio(cacheKey) {
     try {
-      const formats = ['mp3', 'wav'];
+      const formats = ['wav', 'mp3'];
       
       for (const format of formats) {
         const filename = `${cacheKey}.${format}`;
@@ -292,36 +367,6 @@ class MurfAIService {
     }
   }
 
-  // Get list of available voices from MurfAI
-  async getAvailableVoices() {
-    const startTime = Date.now();
-    
-    try {
-      const response = await axios.get(
-        `${this.baseUrl}/voices`,
-        {
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
-        }
-      );
-
-      const duration = Date.now() - startTime;
-      logger.logApiCall('MurfAI', 'getAvailableVoices', duration, true);
-
-      return response.data.voices || [];
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      logger.logApiCall('MurfAI', 'getAvailableVoices', duration, false);
-      logger.error('Failed to get available voices:', error);
-      
-      // Return default voices if API fails
-      return this.getDefaultVoices();
-    }
-  }
-
   // Get default voices (fallback)
   getDefaultVoices() {
     return [
@@ -329,6 +374,7 @@ class MurfAIService {
       { id: 'en-US-wayne', name: 'Wayne', language: 'en-US', gender: 'male' },
       { id: 'en-US-sara', name: 'Sara', language: 'en-US', gender: 'female' },
       { id: 'en-US-noah', name: 'Noah', language: 'en-US', gender: 'male' },
+      { id: 'en-US-amara', name: 'Amara', language: 'en-US', gender: 'female' },
       { id: 'en-GB-elizabeth', name: 'Elizabeth', language: 'en-GB', gender: 'female' },
       { id: 'en-GB-charles', name: 'Charles', language: 'en-GB', gender: 'male' }
     ];
@@ -337,7 +383,7 @@ class MurfAIService {
   // Pre-generate common messages for faster response times
   async preGenerateCommonMessages() {
     // Check if MurfAI is properly configured
-    if (!this.apiKey || !this.baseUrl) {
+    if (!this.apiKey) {
       logger.warn('MurfAI not configured, skipping pre-generation');
       return [];
     }
@@ -361,7 +407,11 @@ class MurfAIService {
     try {
       logger.info('Pre-generating common messages...');
       const results = await this.batchTextToSpeech(commonMessages, { useCache: true });
-      logger.info('Common messages pre-generated successfully', { count: results.length });
+      logger.info('Common messages pre-generated successfully', { 
+        total: commonMessages.length,
+        successful: results.length,
+        failed: commonMessages.length - results.length
+      });
       return results;
     } catch (error) {
       logger.warn('Failed to pre-generate common messages (will generate on-demand):', error.message);
@@ -371,4 +421,3 @@ class MurfAIService {
 }
 
 module.exports = new MurfAIService();
-

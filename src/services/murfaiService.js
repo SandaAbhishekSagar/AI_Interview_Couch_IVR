@@ -12,7 +12,7 @@ class MurfAIService {
     this.publicAudioUrl = process.env.WEBHOOK_BASE_URL || '';
     
     if (!this.apiKey) {
-      throw new Error('MurfAI API key not configured');
+      logger.warn('MurfAI API key not configured - TTS will fall back to Twilio');
     }
     
     // Create temp audio directory if it doesn't exist
@@ -45,9 +45,14 @@ class MurfAIService {
       throw new Error('Text is required for TTS conversion');
     }
 
+    // Check if API key is configured
+    if (!this.apiKey) {
+      throw new Error('MurfAI API key not configured');
+    }
+
+    const startTime = Date.now();
+    
     try {
-      const startTime = Date.now();
-      
       // Generate cache key for reusing audio files
       const cacheKey = this.generateCacheKey(text, voiceId, pitch, speed);
       
@@ -118,7 +123,7 @@ class MurfAIService {
       };
 
     } catch (error) {
-      const duration = Date.now() - (startTime || Date.now());
+      const duration = Date.now() - startTime;
       logger.logApiCall('MurfAI', 'textToSpeech', duration, false);
       logger.error('Failed to convert text to speech with MurfAI:', error);
       
@@ -173,8 +178,8 @@ class MurfAIService {
       return results;
     } catch (error) {
       const duration = Date.now() - startTime;
-      logger.error('Failed to batch convert texts to speech:', error);
-      logger.error('Batch processing failed after', duration, 'ms');
+      logger.error('Failed to batch convert texts to speech:', error.message || error);
+      logger.error(`Batch processing failed after ${duration}ms`);
       throw error;
     }
   }
@@ -331,6 +336,12 @@ class MurfAIService {
 
   // Pre-generate common messages for faster response times
   async preGenerateCommonMessages() {
+    // Check if MurfAI is properly configured
+    if (!this.apiKey || !this.baseUrl) {
+      logger.warn('MurfAI not configured, skipping pre-generation');
+      return [];
+    }
+
     const commonMessages = [
       'Welcome to AI Interview Coaching. I\'m your personal interview coach.',
       'Thank you for that answer.',
@@ -353,7 +364,8 @@ class MurfAIService {
       logger.info('Common messages pre-generated successfully', { count: results.length });
       return results;
     } catch (error) {
-      logger.error('Failed to pre-generate common messages:', error);
+      logger.warn('Failed to pre-generate common messages (will generate on-demand):', error.message);
+      return [];
     }
   }
 }

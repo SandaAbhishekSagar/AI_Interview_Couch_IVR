@@ -26,7 +26,7 @@ class TwilioService {
       speechTimeout = 'auto',
       language = 'en-US',
       voice = 'alice',
-      voiceId = null, // MurfAI voice ID
+      voiceId = process.env.MURF_DEFAULT_VOICE || 'en-US-natalie', // MurfAI voice ID with default
       useTTS = this.useMurfAI // Use MurfAI by default
     } = options;
 
@@ -105,7 +105,7 @@ class TwilioService {
       finishOnKey = '#',
       language = 'en-US',
       voice = 'alice',
-      voiceId = null, // MurfAI voice ID
+      voiceId = process.env.MURF_DEFAULT_VOICE || 'en-US-natalie', // MurfAI voice ID with default
       timeoutAction = null,
       useTTS = this.useMurfAI
     } = options;
@@ -174,7 +174,7 @@ class TwilioService {
     const {
       voice = 'alice',
       language = 'en-US',
-      voiceId = null,
+      voiceId = process.env.MURF_DEFAULT_VOICE || 'en-US-natalie',
       useTTS = this.useMurfAI
     } = options;
 
@@ -219,7 +219,7 @@ class TwilioService {
     const {
       voice = 'alice',
       language = 'en-US',
-      voiceId = null,
+      voiceId = process.env.MURF_DEFAULT_VOICE || 'en-US-natalie',
       useTTS = this.useMurfAI
     } = options;
 

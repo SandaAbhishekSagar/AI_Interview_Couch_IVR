@@ -99,20 +99,19 @@ class MurfAIService {
 
   // Generate audio via WebSocket streaming
   async generateAudioViaWebSocket(text, options = {}) {
-    const {
-      voiceId = 'en-US-natalie',
-      sampleRate = 24000,
-      pitch = 0,
-      speed = 0,
-      style = 'Conversational'
-    } = options;
+    // Ensure we always have a valid voice ID
+    const voiceId = options.voiceId || process.env.MURF_DEFAULT_VOICE || 'en-US-natalie';
+    const sampleRate = options.sampleRate || 24000;
+    const pitch = options.pitch || 0;
+    const speed = options.speed || 0;
+    const style = options.style || 'Conversational';
 
     return new Promise((resolve, reject) => {
       const channelType = 'MONO';
       const format = 'WAV';
       const wsUrl = `${this.wsUrl}?api-key=${this.apiKey}&sample_rate=${sampleRate}&channel_type=${channelType}&format=${format}`;
       
-      logger.info('Connecting to MurfAI WebSocket...', { voiceId, sampleRate });
+      logger.info('Connecting to MurfAI WebSocket...', { voiceId, sampleRate, style });
       
       const ws = new WebSocket(wsUrl);
       const audioChunks = [];

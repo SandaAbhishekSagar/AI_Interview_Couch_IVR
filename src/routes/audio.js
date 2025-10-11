@@ -24,32 +24,48 @@ router.get('/:filename', (req, res) => {
     // Check if file exists first
     const fs = require('fs');
     if (!fs.existsSync(filepath)) {
-      logger.error('Audio file not found:', filename);
+      logger.error('Audio file not found:', { filename, path: filepath });
+      logger.error('Directory contents:', fs.readdirSync(audioDir));
       return res.status(404).send('Audio file not found');
+    }
+    
+    // Get file size for logging
+    const stats = fs.statSync(filepath);
+    logger.info('Preparing to serve audio file:', { 
+      filename, 
+      path: filepath, 
+      size: stats.size,
+      contentType 
+    });
+    
+    // Ensure file is not empty
+    if (stats.size === 0) {
+      logger.error('Audio file is empty:', filename);
+      return res.status(500).send('Audio file is empty');
     }
     
     res.set({
       'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
+      'Content-Length': stats.size,
+      'Cache-Control': 'public, max-age=86400',
       'Access-Control-Allow-Origin': '*',
-      'Accept-Ranges': 'bytes' // Important for streaming audio
+      'Accept-Ranges': 'bytes'
     });
     
-    logger.info('Serving audio file:', { filename, path: filepath, contentType });
-    
     // Use res.sendFile with absolute path
-    res.sendFile(filepath, {
-      headers: {
-        'Content-Type': contentType
-      }
-    }, (err) => {
+    res.sendFile(filepath, (err) => {
       if (err) {
-        logger.error('Error serving audio file:', { filename, error: err.message });
+        logger.error('Error serving audio file:', { 
+          filename, 
+          error: err.message,
+          code: err.code,
+          status: err.status
+        });
         if (!res.headersSent) {
           res.status(500).send('Error serving audio');
         }
       } else {
-        logger.info('Audio file served successfully:', filename);
+        logger.info('✓ Audio file served successfully:', { filename, size: stats.size });
       }
     });
     

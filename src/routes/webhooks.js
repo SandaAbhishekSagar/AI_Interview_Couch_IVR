@@ -6,6 +6,18 @@ const voiceAnalysisService = require('../services/voiceAnalysisService');
 const { User, Session } = require('../database/models');
 const logger = require('../utils/logger');
 
+// GET handler for testing (browser access)
+router.get('/voice', (req, res) => {
+  res.json({
+    message: 'Voice webhook is working!',
+    note: 'This endpoint accepts POST requests from Twilio',
+    test: 'Make a call to your Twilio number to test the actual functionality',
+    configured_url: `${process.env.WEBHOOK_BASE_URL}/webhook/voice`,
+    method: 'POST',
+    status: 'Ready to receive calls'
+  });
+});
+
 // Twilio voice webhook - handles incoming calls
 router.post('/voice', async (req, res) => {
   try {
@@ -35,6 +47,15 @@ router.post('/voice', async (req, res) => {
     res.type('text/xml');
     res.send(errorTwiml);
   }
+});
+
+// GET handler for menu endpoint (testing)
+router.get('/menu', (req, res) => {
+  res.json({
+    message: 'Menu webhook is working!',
+    note: 'This endpoint accepts POST requests from Twilio after voice webhook',
+    method: 'POST'
+  });
 });
 
 // Handle menu selection

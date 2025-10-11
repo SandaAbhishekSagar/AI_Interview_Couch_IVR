@@ -22,9 +22,17 @@ class MurfAIService {
   async ensureAudioDirectory() {
     try {
       await fs.mkdir(this.outputDir, { recursive: true });
-      logger.info('Audio directory created/verified:', this.outputDir);
+      
+      // Verify it's writable
+      const testFile = path.join(this.outputDir, '.test');
+      await fs.writeFile(testFile, 'test');
+      await fs.unlink(testFile);
+      
+      logger.info('Audio directory created/verified and writable:', this.outputDir);
     } catch (error) {
-      logger.error('Failed to create audio directory:', error);
+      logger.error('Failed to create or verify audio directory:', error);
+      // Log the full path for debugging
+      logger.error('Attempted path:', this.outputDir);
     }
   }
 
@@ -186,16 +194,14 @@ class MurfAIService {
             
             logger.info('Received audio chunk:', { 
               size: audioBytes.length,
-              isFirstChunk: firstChunk
+              isFirstChunk: firstChunk,
+              chunkNumber: audioChunks.length + 1
             });
             
-            // Skip WAV header (44 bytes) only for first chunk
-            if (firstChunk && audioBytes.length > 44) {
-              audioChunks.push(audioBytes.slice(44));
-              firstChunk = false;
-            } else {
-              audioChunks.push(audioBytes);
-            }
+            // DON'T strip WAV header - keep the complete audio from MurfAI
+            // MurfAI sends complete valid WAV chunks
+            audioChunks.push(audioBytes);
+            firstChunk = false;
           } else {
             logger.warn('Message received but no audio field:', Object.keys(response));
           }
@@ -307,12 +313,23 @@ class MurfAIService {
       const filename = `${cacheKey}.${format.toLowerCase()}`;
       const filepath = path.join(this.outputDir, filename);
       
+      // Save the audio data
       await fs.writeFile(filepath, audioData);
+      
+      // Verify the file was written
+      const stats = await fs.stat(filepath);
+      logger.info('Audio file saved', { 
+        filename, 
+        size: audioData.length,
+        writtenSize: stats.size,
+        path: filepath
+      });
       
       // Return public URL for Twilio to access
       const publicUrl = `${this.publicAudioUrl}/audio/${filename}`;
       
-      logger.info('Audio file saved', { filename, size: audioData.length, publicUrl });
+      // Log the full URL for debugging
+      logger.info('Audio URL generated:', publicUrl);
       
       return publicUrl;
     } catch (error) {

@@ -27,7 +27,8 @@ class TwilioService {
       language = 'en-US',
       voice = 'alice',
       voiceId = process.env.MURF_DEFAULT_VOICE || 'en-US-natalie', // MurfAI voice ID with default
-      useTTS = this.useMurfAI // Use MurfAI by default
+      useTTS = this.useMurfAI, // Use MurfAI by default
+      redirect = false // If true, redirect instead of gather
     } = options;
 
     const twiml = new twilio.twiml.VoiceResponse();
@@ -39,26 +40,33 @@ class TwilioService {
           const audioUrl = await murfaiService.generateAudioUrl(message, { voiceId });
           
           if (action) {
-            const gather = twiml.gather({
-              action: action,
-              method: method,
-              timeout: timeout,
-              speechTimeout: speechTimeout,
-              language: language,
-              input: ['speech', 'dtmf']
-            });
-            gather.play(audioUrl);
+            if (redirect || timeout === 1) {
+              // Use redirect for immediate continuation
+              twiml.play(audioUrl);
+              twiml.redirect({ method: method }, action);
+            } else {
+              // Use gather for user input
+              const gather = twiml.gather({
+                action: action,
+                method: method,
+                timeout: timeout,
+                speechTimeout: speechTimeout,
+                language: language,
+                input: ['speech', 'dtmf']
+              });
+              gather.play(audioUrl);
+            }
           } else {
             twiml.play(audioUrl);
           }
         } catch (error) {
           logger.error('Failed to generate MurfAI audio, falling back to Twilio TTS:', error);
           // Fallback to Twilio's built-in TTS
-          this.addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice);
+          this.addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice, redirect);
         }
       } else {
         // Use Twilio's built-in TTS
-        this.addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice);
+        this.addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice, redirect);
       }
     } catch (error) {
       logger.error('Error generating TwiML response:', error);
@@ -67,25 +75,38 @@ class TwilioService {
         voice: voice,
         language: language
       }, message);
+      if (action) {
+        twiml.redirect({ method: method }, action);
+      }
     }
 
     return twiml.toString();
   }
 
   // Add fallback TTS using Twilio's say command
-  addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice) {
+  addFallbackTTS(twiml, message, action, method, timeout, speechTimeout, language, voice, redirect = false) {
     if (action) {
-      twiml.gather({
-        action: action,
-        method: method,
-        timeout: timeout,
-        speechTimeout: speechTimeout,
-        language: language,
-        input: ['speech', 'dtmf']
-      }).say({
-        voice: voice,
-        language: language
-      }, message);
+      if (redirect || timeout === 1) {
+        // Use redirect for immediate continuation
+        twiml.say({
+          voice: voice,
+          language: language
+        }, message);
+        twiml.redirect({ method: method }, action);
+      } else {
+        // Use gather for user input
+        twiml.gather({
+          action: action,
+          method: method,
+          timeout: timeout,
+          speechTimeout: speechTimeout,
+          language: language,
+          input: ['speech', 'dtmf']
+        }).say({
+          voice: voice,
+          language: language
+        }, message);
+      }
     } else {
       twiml.say({
         voice: voice,

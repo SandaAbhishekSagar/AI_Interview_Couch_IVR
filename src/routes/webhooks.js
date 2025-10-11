@@ -80,11 +80,12 @@ router.post('/menu', async (req, res) => {
     let response;
 
     if (userInput && (userInput.includes('1') || userInput.toLowerCase().includes('mock interview'))) {
-      // Start mock interview - RESPOND IMMEDIATELY
+      // Start mock interview - RESPOND IMMEDIATELY with redirect
       response = await twilioService.generateTwiMLResponse({
         message: 'Great! Let me start your mock interview. Please hold while I prepare your first question.',
         action: `${process.env.WEBHOOK_BASE_URL}/webhook/start-interview?from=${params.from}&callSid=${params.callSid}`,
-        timeout: 1
+        timeout: 1,
+        redirect: true // Use redirect instead of gather
       });
       
       // Process setup in background (don't await)
@@ -93,11 +94,12 @@ router.post('/menu', async (req, res) => {
       });
       
     } else if (userInput && (userInput.includes('2') || userInput.toLowerCase().includes('coaching'))) {
-      // Start coaching session - RESPOND IMMEDIATELY
+      // Start coaching session - RESPOND IMMEDIATELY with redirect
       response = await twilioService.generateTwiMLResponse({
         message: 'Great! Let me start your coaching session. Please hold while I prepare.',
         action: `${process.env.WEBHOOK_BASE_URL}/webhook/start-coaching?from=${params.from}&callSid=${params.callSid}`,
-        timeout: 1
+        timeout: 1,
+        redirect: true // Use redirect instead of gather
       });
       
       // Process setup in background

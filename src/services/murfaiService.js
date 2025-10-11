@@ -168,14 +168,27 @@ class MurfAIService {
         
         try {
           const response = JSON.parse(data.toString());
-          logger.info('Received WebSocket message:', { 
-            hasAudio: !!response.audio, 
-            final: response.final 
-          });
+          
+          // Log the FULL response to debug what MurfAI is sending
+          logger.info('Received WebSocket message:', JSON.stringify(response, null, 2));
 
+          // Check for errors in the response
+          if (response.error) {
+            logger.error('MurfAI returned error:', response.error);
+            ws.close();
+            reject(new Error(`MurfAI API error: ${JSON.stringify(response.error)}`));
+            return;
+          }
+
+          // Check for audio data
           if (response.audio) {
             // Decode base64 audio
             const audioBytes = Buffer.from(response.audio, 'base64');
+            
+            logger.info('Received audio chunk:', { 
+              size: audioBytes.length,
+              isFirstChunk: firstChunk
+            });
             
             // Skip WAV header (44 bytes) only for first chunk
             if (firstChunk && audioBytes.length > 44) {
@@ -184,11 +197,20 @@ class MurfAIService {
             } else {
               audioChunks.push(audioBytes);
             }
+          } else {
+            logger.warn('Message received but no audio field:', Object.keys(response));
           }
 
           // Check if this is the final message
           if (response.final) {
+            logger.info('Received final message, closing connection');
             ws.close();
+            
+            // Check if we got any audio
+            if (audioChunks.length === 0) {
+              reject(new Error('Received final message but no audio chunks were collected'));
+              return;
+            }
             
             // Combine all audio chunks
             const fullAudio = Buffer.concat(audioChunks);

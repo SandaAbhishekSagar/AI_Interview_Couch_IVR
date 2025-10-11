@@ -400,6 +400,8 @@ router.post('/response', async (req, res) => {
 
 // New endpoint to continue interview after processing
 router.post('/continue-interview', async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const params = twilioService.parseWebhookParams(req);
     const callSid = params.callSid || req.query.callSid;
@@ -415,44 +417,93 @@ router.post('/continue-interview', async (req, res) => {
     // Get user
     const user = await session.getUser();
 
-    // Generate next question or end session
-    const nextQuestion = await generateNextQuestion(session, user);
+    // Check how many questions we have
+    const questions = session.questions || [];
+    const responses = session.responses || [];
     
+    logger.info('Session state:', { 
+      totalQuestions: questions.length, 
+      totalResponses: responses.length 
+    });
+
+    // Generate next question or end session
     let twiml;
-    if (nextQuestion) {
-      const message = `Here's your next question: ${nextQuestion.text}. Please provide your response.`;
-      
-      twiml = await twilioService.generateRecordingTwiML({
-        message: message,
-        action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-        timeout: 120,
-        finishOnKey: '#',
-        timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
-      });
-    } else {
-      // End session
+    
+    if (questions.length >= 5) {
+      // End session - we have enough questions
       await endMockInterview(session, user);
       const message = `Thank you for completing the mock interview. Your session has been analyzed and feedback will be provided. Have a great day!`;
       twiml = await twilioService.generateHangupTwiML(message);
+    } else {
+      // Generate next question using fallback (fast) if OpenAI is slow
+      let nextQuestion;
+      
+      try {
+        // Try to generate with OpenAI with short timeout
+        const questionPromise = generateNextQuestion(session, user);
+        const timeoutPromise = new Promise((resolve) => 
+          setTimeout(() => resolve(null), 8000) // 8 second timeout
+        );
+        
+        nextQuestion = await Promise.race([questionPromise, timeoutPromise]);
+      } catch (err) {
+        logger.warn('Question generation slow, using fallback');
+        nextQuestion = null;
+      }
+      
+      if (nextQuestion) {
+        const message = `Here's your next question: ${nextQuestion.text}. Please provide your response.`;
+        
+        twiml = await twilioService.generateRecordingTwiML({
+          message: message,
+          action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+          timeout: 120,
+          finishOnKey: '#',
+          timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+        });
+      } else {
+        // Use fallback question
+        const fallbackMessage = `Here's your next question: Tell me about a time when you demonstrated leadership. Please provide your response.`;
+        
+        twiml = await twilioService.generateRecordingTwiML({
+          message: fallbackMessage,
+          action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+          timeout: 120,
+          finishOnKey: '#',
+          timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+        });
+        
+        // Generate real question in background
+        generateNextQuestion(session, user).catch(err => {
+          logger.error('Background question generation failed:', err);
+        });
+      }
     }
 
+    const duration = Date.now() - startTime;
+    logger.info(`Continue-interview completed in ${duration}ms`);
+    
     res.type('text/xml');
     res.send(twiml);
 
   } catch (error) {
     logger.error('Error continuing interview:', error);
     
-    // Don't hang up on errors, continue with next question
-    const errorTwiml = await twilioService.generateRecordingTwiML({
-      message: 'Here\'s your next question: Tell me about a time when you had to work under pressure. Please provide your response.',
-      action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+    // Don't hang up on errors, use fast fallback
+    const twiml = new (require('twilio')).twiml.VoiceResponse();
+    twiml.say({ voice: 'alice' }, 'Here\'s your next question: Tell me about a time when you had to work under pressure. Please provide your response.');
+    twiml.record({
       timeout: 120,
+      maxLength: 60,
       finishOnKey: '#',
+      transcribe: true,
+      action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+      method: 'POST',
       timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
     });
     
     res.type('text/xml');
-    res.send(errorTwiml);
+    res.send(twiml.toString());
   }
 });
 

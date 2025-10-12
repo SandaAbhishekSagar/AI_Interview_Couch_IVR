@@ -49,7 +49,7 @@ Return as JSON array with this structure:
 ]`;
 
       const completion = await this.client.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-3.5-turbo-0125',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Generate questions for ${industry} ${experienceLevel} level interview focusing on ${focusAreas.join(', ')}` }
@@ -120,7 +120,7 @@ Return JSON with this structure:
 }`;
 
       const completion = await this.client.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-3.5-turbo-0125',
         messages: [
           { role: 'system', content: systemPrompt },
           { 
@@ -197,7 +197,7 @@ Provide recommendations in this JSON format:
 }`;
 
       const completion = await this.client.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-3.5-turbo-0125',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: 'Generate personalized coaching recommendations' }
@@ -256,7 +256,7 @@ Return analysis in JSON format:
 }`;
 
       const completion = await this.client.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-3.5-turbo-0125',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: 'Analyze the speech patterns' }

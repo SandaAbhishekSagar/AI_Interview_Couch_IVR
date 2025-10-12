@@ -124,8 +124,8 @@ router.post('/menu', async (req, res) => {
 
     clearTimeout(timeout);
     if (!res.headersSent) {
-      res.type('text/xml');
-      res.send(response);
+    res.type('text/xml');
+    res.send(response);
     }
   } catch (error) {
     logger.error('Error handling menu selection:', error);
@@ -134,12 +134,12 @@ router.post('/menu', async (req, res) => {
     if (!res.headersSent) {
       const errorTwiml = await twilioService.generateTwiMLResponse({
         message: 'Let me start your mock interview.',
-        action: `${process.env.WEBHOOK_BASE_URL}/webhook/menu`,
+      action: `${process.env.WEBHOOK_BASE_URL}/webhook/menu`,
         timeout: 1
-      });
-      
-      res.type('text/xml');
-      res.send(errorTwiml);
+    });
+    
+    res.type('text/xml');
+    res.send(errorTwiml);
     }
   }
 });
@@ -408,11 +408,14 @@ router.post('/continue-interview', async (req, res) => {
     
     logger.info('Continuing interview', { callSid });
 
-    // Find active session
+    // Find active session - RELOAD to get latest data
     const session = await Session.findActiveByCallSid(callSid);
     if (!session) {
       throw new Error('No active session found');
     }
+    
+    // Reload session to get fresh data from database
+    await session.reload();
 
     // Get user
     const user = await session.getUser();
@@ -422,85 +425,64 @@ router.post('/continue-interview', async (req, res) => {
     const responses = session.responses || [];
     
     logger.info('Session state:', { 
+      sessionId: session.id,
       totalQuestions: questions.length, 
-      totalResponses: responses.length 
+      totalResponses: responses.length,
+      questionTexts: questions.map(q => q.text.substring(0, 50))
     });
 
     // Generate next question or end session
     let twiml;
     
     if (questions.length >= 5) {
-      // End session - we have enough questions
+      // End session - we have 5 questions already
+      logger.info('Interview complete - 5 questions answered');
       await endMockInterview(session, user);
       const message = `Thank you for completing the mock interview. Your session has been analyzed and feedback will be provided. Have a great day!`;
       twiml = await twilioService.generateHangupTwiML(message);
     } else {
-      // Generate next question using fallback (fast) if OpenAI is slow
-      let nextQuestion;
+      // Always generate next question with OpenAI (no fallback, no timeout)
+      logger.info('Generating next question with OpenAI...');
+    const nextQuestion = await generateNextQuestion(session, user);
+    
+    if (nextQuestion) {
+        logger.info('✓ Unique question generated:', { 
+          questionNumber: questions.length + 1,
+          text: nextQuestion.text.substring(0, 100) 
+        });
       
-      try {
-        // Try to generate with OpenAI with short timeout
-        const questionPromise = generateNextQuestion(session, user);
-        const timeoutPromise = new Promise((resolve) => 
-          setTimeout(() => resolve(null), 8000) // 8 second timeout
-        );
-        
-        nextQuestion = await Promise.race([questionPromise, timeoutPromise]);
-      } catch (err) {
-        logger.warn('Question generation slow, using fallback');
-        nextQuestion = null;
-      }
-      
-      if (nextQuestion) {
         const message = `Here's your next question: ${nextQuestion.text}. Please provide your response.`;
         
         twiml = await twilioService.generateRecordingTwiML({
-          message: message,
-          action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-          timeout: 120,
-          finishOnKey: '#',
-          timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
-        });
-      } else {
-        // Use fallback question
-        const fallbackMessage = `Here's your next question: Tell me about a time when you demonstrated leadership. Please provide your response.`;
-        
-        twiml = await twilioService.generateRecordingTwiML({
-          message: fallbackMessage,
-          action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-          timeout: 120,
-          finishOnKey: '#',
-          timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
-        });
-        
-        // Generate real question in background
-        generateNextQuestion(session, user).catch(err => {
-          logger.error('Background question generation failed:', err);
-        });
+        message: message,
+        action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+        timeout: 120,
+        finishOnKey: '#',
+        timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+      });
+    } else {
+        // This should never happen - end gracefully
+        logger.error('Failed to generate question - ending session');
+      await endMockInterview(session, user);
+        const message = `Thank you for your time. Your interview session has been saved. Have a great day!`;
+        twiml = await twilioService.generateHangupTwiML(message);
       }
     }
 
     const duration = Date.now() - startTime;
     logger.info(`Continue-interview completed in ${duration}ms`);
-    
+
     res.type('text/xml');
     res.send(twiml);
 
   } catch (error) {
     logger.error('Error continuing interview:', error);
+    logger.error('Error stack:', error.stack);
     
-    // Don't hang up on errors, use fast fallback
+    // End session gracefully on errors
     const twiml = new (require('twilio')).twiml.VoiceResponse();
-    twiml.say({ voice: 'alice' }, 'Here\'s your next question: Tell me about a time when you had to work under pressure. Please provide your response.');
-    twiml.record({
-      timeout: 120,
-      maxLength: 60,
-      finishOnKey: '#',
-      transcribe: true,
-      action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-      method: 'POST',
-      timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
-    });
+    twiml.say({ voice: 'alice' }, 'I apologize, but we encountered a technical issue. Thank you for your time. Your responses have been saved. Have a great day!');
+    twiml.hangup();
     
     res.type('text/xml');
     res.send(twiml.toString());
@@ -659,37 +641,101 @@ async function processTranscribedResponse(session, user, params) {
   }
 }
 
-// Generate next question
+// Generate next question - ALWAYS uses OpenAI, NO fallbacks
 async function generateNextQuestion(session, user) {
   try {
+    // Reload session to get latest questions from database
+    await session.reload();
+    
     const questions = session.questions || [];
     const responses = session.responses || [];
     
+    logger.info('=== GENERATE NEXT QUESTION ===');
+    logger.info('Session ID:', session.id);
+    logger.info('Current questions count:', questions.length);
+    logger.info('Previous questions:', questions.map((q, i) => `${i+1}. ${q.text.substring(0, 60)}...`));
+    
     // Check if we have enough questions (limit to 5 for phone interview)
     if (questions.length >= 5) {
+      logger.info('✓ Already have 5 questions, interview should end');
       return null;
     }
 
-    // Generate next question
+    // Build list of previous question texts for OpenAI to avoid
+    const previousQuestionTexts = questions.map(q => q.text);
+    
+    logger.info('Calling OpenAI with params:', {
+      industry: user.industry,
+      experienceLevel: user.experienceLevel,
+      questionCount: 1,
+      previousQuestionsCount: previousQuestionTexts.length
+    });
+
+    // Generate next question with OpenAI - NO TIMEOUT
     const newQuestions = await openaiService.generateInterviewQuestions({
       industry: user.industry,
       experienceLevel: user.experienceLevel,
       questionCount: 1,
-      previousQuestions: questions.map(q => q.text),
+      previousQuestions: previousQuestionTexts,
       focusAreas: ['behavioral', 'technical']
+    });
+
+    logger.info('✓ OpenAI returned:', { 
+      questionCount: newQuestions.length,
+      question: newQuestions.length > 0 ? newQuestions[0].text : 'NONE'
     });
 
     if (newQuestions.length > 0) {
       const nextQuestion = newQuestions[0];
-      await session.addQuestion(nextQuestion);
-      return nextQuestion;
+      
+      // Verify it's different from previous questions
+      const isDuplicate = previousQuestionTexts.some(prev => 
+        prev.toLowerCase() === nextQuestion.text.toLowerCase()
+      );
+      
+      if (isDuplicate) {
+        logger.error('⚠️ OpenAI generated duplicate question! Trying again...');
+        // Try one more time with stronger prompt
+        const retryQuestions = await openaiService.generateInterviewQuestions({
+          industry: user.industry,
+          experienceLevel: user.experienceLevel,
+          questionCount: 1,
+          previousQuestions: [...previousQuestionTexts, 'DO NOT REPEAT ANY OF THESE QUESTIONS'],
+          focusAreas: ['behavioral', 'technical']
+        });
+        
+        if (retryQuestions.length > 0) {
+          return await saveQuestionToSession(session, retryQuestions[0]);
+        }
+      }
+      
+      return await saveQuestionToSession(session, nextQuestion);
     }
 
+    logger.error('❌ OpenAI returned no questions!');
     return null;
   } catch (error) {
-    logger.error('Error generating next question:', error);
+    logger.error('❌ Error generating next question:', error);
+    logger.error('Error details:', error.message);
+    logger.error('Stack trace:', error.stack);
     return null;
   }
+}
+
+// Helper function to save question to session
+async function saveQuestionToSession(session, question) {
+  logger.info('Adding question to session:', question.text.substring(0, 100));
+  
+  await session.addQuestion(question);
+  
+  // Reload to confirm it was saved
+  await session.reload();
+  
+  const updatedQuestions = session.questions || [];
+  logger.info('✓ Question saved! Total questions now:', updatedQuestions.length);
+  logger.info('All questions in session:', updatedQuestions.map((q, i) => `${i+1}. ${q.text.substring(0, 50)}...`));
+  
+  return question;
 }
 
 // End mock interview session
@@ -1030,23 +1076,8 @@ function handleRepresentativeTransfer(params) {
   const twiml = new (require('twilio')).twiml.VoiceResponse();
   twiml.say({ voice: 'alice' }, 'I\'m transferring you to a representative. Please hold while I connect you.');
   
-  // OPTION 1: Transfer to a real phone number
-  // Uncomment and replace with your support number:
-  twiml.dial('+18573959451'); // Replace with your support number
-  
-  // OPTION 2: Transfer to another Twilio number
-  // twiml.dial('+15551234567'); // Replace with your support Twilio number
-  
-//   // OPTION 3: Current - Provide contact information
-//   // This is what's active now (no live transfer):
-//   if (process.env.SUPPORT_PHONE_NUMBER) {
-//     // If you've set a support number, transfer to it
-//     twiml.dial(process.env.SUPPORT_PHONE_NUMBER);
-//   } else {
-//     // Otherwise, provide contact info
-//     twiml.say({ voice: 'alice' }, 'For immediate assistance, please call our support line at 1-800-123-4567 or email us at support@yourcompany.com. Thank you for using AI Interview Coaching.');
-//     twiml.hangup();
-//   }
+  // Transfer to your phone number
+  twiml.dial('+18573959451');
   
   return twiml.toString();
 }

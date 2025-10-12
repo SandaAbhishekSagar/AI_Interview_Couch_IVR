@@ -1027,23 +1027,29 @@ async function endCoachingSession(session, user) {
 
 // Handle representative transfer
 function handleRepresentativeTransfer(params) {
-  const message = 'I\'m transferring you to a representative. Please hold while I connect you.';
-  
   const twiml = new (require('twilio')).twiml.VoiceResponse();
-  twiml.say(message);
+  twiml.say({ voice: 'alice' }, 'I\'m transferring you to a representative. Please hold while I connect you.');
   
-  // Option 1: Transfer to a real phone number (uncomment and add your number)
-  // twiml.dial('+1234567890'); // Replace with your support number
+  // OPTION 1: Transfer to a real phone number
+  // Uncomment and replace with your support number:
+  twiml.dial('+18573959451'); // Replace with your support number
   
-  // Option 2: Transfer to another Twilio number
+  // OPTION 2: Transfer to another Twilio number
   // twiml.dial('+15551234567'); // Replace with your support Twilio number
   
-  // Option 3: For now, provide contact information instead of hanging up
-  twiml.say('For immediate assistance, please call our support line at 1-800-123-4567 or email us at support@yourcompany.com. Thank you for using AI Interview Coaching.');
-  twiml.hangup();
+//   // OPTION 3: Current - Provide contact information
+//   // This is what's active now (no live transfer):
+//   if (process.env.SUPPORT_PHONE_NUMBER) {
+//     // If you've set a support number, transfer to it
+//     twiml.dial(process.env.SUPPORT_PHONE_NUMBER);
+//   } else {
+//     // Otherwise, provide contact info
+//     twiml.say({ voice: 'alice' }, 'For immediate assistance, please call our support line at 1-800-123-4567 or email us at support@yourcompany.com. Thank you for using AI Interview Coaching.');
+//     twiml.hangup();
+//   }
   
-  return twiml.toString();
-}
+//   return twiml.toString();
+// }
 
 // Handle call status updates
 router.post('/status', (req, res) => {

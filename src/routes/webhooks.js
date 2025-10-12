@@ -1048,8 +1048,8 @@ function handleRepresentativeTransfer(params) {
 //     twiml.hangup();
 //   }
   
-//   return twiml.toString();
-// }
+  return twiml.toString();
+}
 
 // Handle call status updates
 router.post('/status', (req, res) => {

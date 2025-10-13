@@ -684,20 +684,30 @@ async function processTranscribedResponse(session, user, params) {
 // Generate next question - ALWAYS uses OpenAI, NO fallbacks
 async function generateNextQuestion(session, user) {
   try {
+    logger.info('=== GENERATE NEXT QUESTION START ===');
+    logger.info('Session ID before reload:', session.id);
+    logger.info('Questions before reload:', (session.questions || []).length);
+    
     // Reload session to get latest questions from database
     await session.reload();
+    
+    logger.info('Session reloaded from database');
+    logger.info('Questions after reload:', (session.questions || []).length);
     
     const questions = session.questions || [];
     const responses = session.responses || [];
     
-    logger.info('=== GENERATE NEXT QUESTION ===');
-    logger.info('Session ID:', session.id);
-    logger.info('Current questions count:', questions.length);
-    logger.info('Previous questions:', questions.map((q, i) => `${i+1}. ${q.text.substring(0, 60)}...`));
+    logger.info('Session state:');
+    logger.info('  - Questions count:', questions.length);
+    logger.info('  - Responses count:', responses.length);
+    logger.info('  - Previous questions:');
+    questions.forEach((q, i) => {
+      logger.info(`     ${i+1}. ${q.text.substring(0, 80)}...`);
+    });
     
     // Check if we have enough questions (limit to 5 for phone interview)
     if (questions.length >= 5) {
-      logger.info('✓ Already have 5 questions, interview should end');
+      logger.info('✓ Already have 5 questions, returning null to end interview');
       return null;
     }
 
@@ -705,15 +715,21 @@ async function generateNextQuestion(session, user) {
     const previousQuestionTexts = questions.map(q => q.text);
     const previousAnswerTexts = responses.map(r => r.text || r.transcription || '');
     
-    logger.info('Calling OpenAI with params:', {
-      industry: user.industry,
-      experienceLevel: user.experienceLevel,
-      questionCount: 1,
-      previousQuestionsCount: previousQuestionTexts.length,
-      previousAnswersCount: previousAnswerTexts.length
-    });
+    logger.info('Preparing OpenAI request:');
+    logger.info('  - Industry:', user.industry);
+    logger.info('  - Experience:', user.experienceLevel);
+    logger.info('  - Previous questions to avoid:', previousQuestionTexts.length);
+    logger.info('  - Previous answers for context:', previousAnswerTexts.length);
+    
+    if (previousQuestionTexts.length > 0) {
+      logger.info('  - Questions to avoid:');
+      previousQuestionTexts.forEach((q, i) => {
+        logger.info(`     ${i+1}. ${q.substring(0, 80)}...`);
+      });
+    }
 
     // Generate next question with OpenAI - NO TIMEOUT, WITH CONTEXT
+    logger.info('>>> Calling OpenAI API...');
     const newQuestions = await openaiService.generateInterviewQuestions({
       industry: user.industry,
       experienceLevel: user.experienceLevel,
@@ -723,9 +739,11 @@ async function generateNextQuestion(session, user) {
       focusAreas: ['behavioral', 'technical']
     });
 
-    logger.info('✓ OpenAI returned:', { 
+    logger.info('<<< OpenAI API returned');
+    logger.info('✓ OpenAI response:', { 
       questionCount: newQuestions.length,
-      question: newQuestions.length > 0 ? newQuestions[0].text : 'NONE'
+      question: newQuestions.length > 0 ? newQuestions[0].text : 'NONE',
+      fullQuestion: newQuestions.length > 0 ? newQuestions[0] : null
     });
 
     if (newQuestions.length > 0) {
@@ -771,18 +789,40 @@ async function generateNextQuestion(session, user) {
 
 // Helper function to save question to session
 async function saveQuestionToSession(session, question) {
-  logger.info('Adding question to session:', question.text.substring(0, 100));
+  logger.info('=== SAVING QUESTION TO SESSION ===');
+  logger.info('Session ID:', session.id);
+  logger.info('Question to add:', question.text);
+  logger.info('Questions before save:', (session.questions || []).length);
   
-  await session.addQuestion(question);
-  
-  // Reload to confirm it was saved
-  await session.reload();
-  
-  const updatedQuestions = session.questions || [];
-  logger.info('✓ Question saved! Total questions now:', updatedQuestions.length);
-  logger.info('All questions in session:', updatedQuestions.map((q, i) => `${i+1}. ${q.text.substring(0, 50)}...`));
-  
-  return question;
+  try {
+    // Add question using the model method
+    await session.addQuestion(question);
+    
+    logger.info('✓ addQuestion() called successfully');
+    
+    // Reload from database to get fresh data
+    await session.reload();
+    
+    const updatedQuestions = session.questions || [];
+    logger.info('✓ Session reloaded from database');
+    logger.info('✓ Total questions after save:', updatedQuestions.length);
+    logger.info('✓ All questions in session:');
+    updatedQuestions.forEach((q, i) => {
+      logger.info(`   ${i+1}. ${q.text.substring(0, 80)}...`);
+    });
+    
+    // Double-check it was actually saved
+    if (updatedQuestions.length === 0) {
+      logger.error('❌ CRITICAL: Questions array is empty after save!');
+      logger.error('Session data:', JSON.stringify(session.toJSON(), null, 2));
+    }
+    
+    return question;
+  } catch (error) {
+    logger.error('❌ Error saving question to session:', error);
+    logger.error('Error stack:', error.stack);
+    throw error;
+  }
 }
 
 // End mock interview session with comprehensive feedback

@@ -20,21 +20,35 @@ class OpenAIService {
       sessionType = 'mock_interview',
       questionCount = 5,
       previousQuestions = [],
+      previousAnswers = [], // NEW: Include previous answers for context
       focusAreas = ['behavioral', 'technical']
     } = options;
 
     try {
       const startTime = Date.now();
       
-      const systemPrompt = `You are an expert interview coach. Generate ${questionCount} high-quality interview questions for a ${experienceLevel}-level position in the ${industry} industry.
+      // Build context from previous Q&A
+      let conversationContext = '';
+      if (previousQuestions.length > 0 && previousAnswers.length > 0) {
+        conversationContext = '\n\nPrevious conversation context:\n';
+        for (let i = 0; i < Math.min(previousQuestions.length, previousAnswers.length); i++) {
+          conversationContext += `Q${i+1}: ${previousQuestions[i]}\n`;
+          conversationContext += `A${i+1}: ${previousAnswers[i].substring(0, 200)}...\n\n`;
+        }
+        conversationContext += 'Use this context to ask relevant follow-up questions that build on what the candidate has shared.';
+      }
+      
+      const systemPrompt = `You are an expert interview coach conducting a ${experienceLevel}-level ${industry} interview. Generate ${questionCount} high-quality, contextual interview questions.
 
 Requirements:
-- Questions should be appropriate for ${experienceLevel} level
+- Questions should be appropriate for ${experienceLevel} level in ${industry} industry
 - Focus on: ${focusAreas.join(', ')}
-- Avoid repeating: ${previousQuestions.join(', ')}
-- Make questions realistic and challenging
-- Include mix of behavioral and technical questions
-- Format each question with category and difficulty level
+- DO NOT repeat any of these questions: ${previousQuestions.join(' | ')}
+- Make questions realistic, challenging, and conversational
+- If previous answers are provided, build follow-up questions based on candidate's experience
+- Ask questions that dig deeper into their specific background and examples
+- Vary between behavioral, technical, and situational questions
+${conversationContext}
 
 Return as JSON array with this structure:
 [
@@ -52,9 +66,9 @@ Return as JSON array with this structure:
         model: 'gpt-3.5-turbo-0125',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Generate questions for ${industry} ${experienceLevel} level interview focusing on ${focusAreas.join(', ')}` }
+          { role: 'user', content: `Generate ${questionCount} contextual questions for ${industry} ${experienceLevel} level interview. Previous questions asked: ${previousQuestions.length}` }
         ],
-        temperature: 0.7,
+        temperature: 0.8, // Slightly higher for more variety
         max_tokens: 1500
       });
 

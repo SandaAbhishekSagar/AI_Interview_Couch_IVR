@@ -420,7 +420,7 @@ router.post('/continue-interview', async (req, res) => {
     // Get user
     const user = await session.getUser();
 
-    // Check how many questions we have
+    // Check how many questions and responses we have
     const questions = session.questions || [];
     const responses = session.responses || [];
     
@@ -434,36 +434,76 @@ router.post('/continue-interview', async (req, res) => {
     // Generate next question or end session
     let twiml;
     
-    if (questions.length >= 5) {
-      // End session - we have 5 questions already
-      logger.info('Interview complete - 5 questions answered');
+    // END CONDITION: 5 responses received (not just 5 questions asked)
+    if (responses.length >= 5) {
+      // User has answered 5 questions - END INTERVIEW
+      logger.info('✓ Interview complete - 5 responses received, ending session');
+      
       await endMockInterview(session, user);
-      const message = `Thank you for completing the mock interview. Your session has been analyzed and feedback will be provided. Have a great day!`;
-      twiml = await twilioService.generateHangupTwiML(message);
+      
+      // Generate final feedback message
+      const overallScore = session.scores?.overall || 0;
+      let feedbackMessage = `Thank you for completing the mock interview! `;
+      
+      if (overallScore > 80) {
+        feedbackMessage += `You performed excellently with an overall score of ${Math.round(overallScore)} out of 100. `;
+      } else if (overallScore > 60) {
+        feedbackMessage += `You performed well with an overall score of ${Math.round(overallScore)} out of 100. `;
+      } else if (overallScore > 0) {
+        feedbackMessage += `Your overall score is ${Math.round(overallScore)} out of 100. `;
+      }
+      
+      feedbackMessage += `Your detailed feedback and analysis has been saved. Check your session history for improvement tips. Have a great day!`;
+      
+      twiml = await twilioService.generateHangupTwiML(feedbackMessage);
+      
+    } else if (questions.length >= 5) {
+      // We have 5 questions but user hasn't answered all yet
+      // This shouldn't happen, but if it does, ask the unanswered question
+      logger.warn('Have 5 questions but only', responses.length, 'responses');
+      
+      if (responses.length < questions.length) {
+        const unansweredQuestion = questions[responses.length];
+        const message = `Here's your next question: ${unansweredQuestion.text}. Please provide your response.`;
+        
+        twiml = await twilioService.generateRecordingTwiML({
+          message: message,
+          action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+          timeout: 120,
+          finishOnKey: '#',
+          timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+        });
+      } else {
+        // All 5 answered, end
+        await endMockInterview(session, user);
+        const message = `Thank you for completing the mock interview. Have a great day!`;
+        twiml = await twilioService.generateHangupTwiML(message);
+      }
+      
     } else {
-      // Always generate next question with OpenAI (no fallback, no timeout)
-      logger.info('Generating next question with OpenAI...');
-    const nextQuestion = await generateNextQuestion(session, user);
-    
-    if (nextQuestion) {
-        logger.info('✓ Unique question generated:', { 
+      // Need more questions - generate next one with context
+      logger.info(`Generating question ${questions.length + 1} of 5 with OpenAI...`);
+      const nextQuestion = await generateNextQuestion(session, user);
+      
+      if (nextQuestion) {
+        logger.info('✓ Contextual question generated:', { 
           questionNumber: questions.length + 1,
           text: nextQuestion.text.substring(0, 100) 
         });
-      
+        
         const message = `Here's your next question: ${nextQuestion.text}. Please provide your response.`;
         
         twiml = await twilioService.generateRecordingTwiML({
-        message: message,
-        action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
-        timeout: 120,
-        finishOnKey: '#',
-        timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
-      });
-    } else {
-        // This should never happen - end gracefully
+          message: message,
+          action: `${process.env.WEBHOOK_BASE_URL}/webhook/response`,
+          timeout: 120,
+          finishOnKey: '#',
+          timeoutAction: `${process.env.WEBHOOK_BASE_URL}/webhook/response-timeout`
+        });
+      } else {
+        // Failed to generate question - end gracefully
         logger.error('Failed to generate question - ending session');
-      await endMockInterview(session, user);
+        await endMockInterview(session, user);
         const message = `Thank you for your time. Your interview session has been saved. Have a great day!`;
         twiml = await twilioService.generateHangupTwiML(message);
       }
@@ -661,22 +701,25 @@ async function generateNextQuestion(session, user) {
       return null;
     }
 
-    // Build list of previous question texts for OpenAI to avoid
+    // Build list of previous question texts and answers for context
     const previousQuestionTexts = questions.map(q => q.text);
+    const previousAnswerTexts = responses.map(r => r.text || r.transcription || '');
     
     logger.info('Calling OpenAI with params:', {
       industry: user.industry,
       experienceLevel: user.experienceLevel,
       questionCount: 1,
-      previousQuestionsCount: previousQuestionTexts.length
+      previousQuestionsCount: previousQuestionTexts.length,
+      previousAnswersCount: previousAnswerTexts.length
     });
 
-    // Generate next question with OpenAI - NO TIMEOUT
+    // Generate next question with OpenAI - NO TIMEOUT, WITH CONTEXT
     const newQuestions = await openaiService.generateInterviewQuestions({
       industry: user.industry,
       experienceLevel: user.experienceLevel,
       questionCount: 1,
       previousQuestions: previousQuestionTexts,
+      previousAnswers: previousAnswerTexts, // Include answers for context
       focusAreas: ['behavioral', 'technical']
     });
 
@@ -690,22 +733,26 @@ async function generateNextQuestion(session, user) {
       
       // Verify it's different from previous questions
       const isDuplicate = previousQuestionTexts.some(prev => 
-        prev.toLowerCase() === nextQuestion.text.toLowerCase()
+        prev.toLowerCase().trim() === nextQuestion.text.toLowerCase().trim()
       );
       
       if (isDuplicate) {
         logger.error('⚠️ OpenAI generated duplicate question! Trying again...');
-        // Try one more time with stronger prompt
+        // Try one more time with stronger prompt and context
         const retryQuestions = await openaiService.generateInterviewQuestions({
           industry: user.industry,
           experienceLevel: user.experienceLevel,
           questionCount: 1,
-          previousQuestions: [...previousQuestionTexts, 'DO NOT REPEAT ANY OF THESE QUESTIONS'],
+          previousQuestions: [...previousQuestionTexts, 'CRITICAL: Generate a COMPLETELY DIFFERENT question'],
+          previousAnswers: previousAnswerTexts,
           focusAreas: ['behavioral', 'technical']
         });
         
-        if (retryQuestions.length > 0) {
+        if (retryQuestions.length > 0 && retryQuestions[0].text !== nextQuestion.text) {
+          logger.info('✓ Retry successful, got unique question');
           return await saveQuestionToSession(session, retryQuestions[0]);
+        } else {
+          logger.warn('Retry also gave duplicate, using it anyway');
         }
       }
       
@@ -738,9 +785,55 @@ async function saveQuestionToSession(session, question) {
   return question;
 }
 
-// End mock interview session
+// End mock interview session with comprehensive feedback
 async function endMockInterview(session, user) {
   try {
+    logger.info('=== ENDING MOCK INTERVIEW ===');
+    
+    // Reload session to get all responses
+    await session.reload();
+    
+    const responses = session.responses || [];
+    const questions = session.questions || [];
+    
+    logger.info('Final session data:', {
+      sessionId: session.id,
+      totalQuestions: questions.length,
+      totalResponses: responses.length
+    });
+    
+    // Calculate final scores from all responses
+    if (responses.length > 0) {
+      let totalContentScore = 0;
+      let totalStructureScore = 0;
+      let totalCommunicationScore = 0;
+      let totalIndustryScore = 0;
+      let count = 0;
+      
+      responses.forEach(response => {
+        if (response.scores) {
+          totalContentScore += response.scores.content || 0;
+          totalStructureScore += response.scores.structure || 0;
+          totalCommunicationScore += response.scores.communication || 0;
+          totalIndustryScore += response.scores.industryKnowledge || 0;
+          count++;
+        }
+      });
+      
+      if (count > 0) {
+        const averageScores = {
+          content: Math.round(totalContentScore / count),
+          structure: Math.round(totalStructureScore / count),
+          communication: Math.round(totalCommunicationScore / count),
+          industryKnowledge: Math.round(totalIndustryScore / count),
+          overall: Math.round((totalContentScore + totalStructureScore + totalCommunicationScore + totalIndustryScore) / (count * 4))
+        };
+        
+        await session.updateScores(averageScores);
+        logger.info('Final scores calculated:', averageScores);
+      }
+    }
+    
     // Complete session
     await session.completeSession();
     
@@ -753,13 +846,16 @@ async function endMockInterview(session, user) {
       await user.updateAverageScore(overallScore);
     }
 
-    logger.info('Mock interview session completed', {
+    logger.info('✓ Mock interview session completed successfully', {
       sessionId: session.id,
       userId: user.id,
+      questionsAsked: questions.length,
+      responsesReceived: responses.length,
       finalScore: overallScore
     });
   } catch (error) {
     logger.error('Error ending mock interview:', error);
+    logger.error('Error details:', error.message);
   }
 }
 

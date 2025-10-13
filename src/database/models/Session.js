@@ -105,7 +105,14 @@ Session.prototype.addQuestion = async function(question) {
     timestamp: new Date().toISOString()
   });
   this.questions = questions;
+  
+  // CRITICAL: Mark the JSON field as changed so Sequelize saves it!
+  this.changed('questions', true);
+  
   await this.save();
+  
+  // Verify it was saved
+  await this.reload();
 };
 
 Session.prototype.addResponse = async function(response) {
@@ -119,7 +126,14 @@ Session.prototype.addResponse = async function(response) {
     metrics: response.metrics || {}
   });
   this.responses = responses;
+  
+  // CRITICAL: Mark the JSON field as changed so Sequelize saves it!
+  this.changed('responses', true);
+  
   await this.save();
+  
+  // Verify it was saved
+  await this.reload();
 };
 
 Session.prototype.updateFeedback = async function(feedback) {
@@ -128,6 +142,7 @@ Session.prototype.updateFeedback = async function(feedback) {
     ...feedback,
     updatedAt: new Date().toISOString()
   };
+  this.changed('feedback', true);
   await this.save();
 };
 
@@ -137,6 +152,7 @@ Session.prototype.updateScores = async function(scores) {
     ...scores,
     updatedAt: new Date().toISOString()
   };
+  this.changed('scores', true);
   await this.save();
 };
 
@@ -146,6 +162,7 @@ Session.prototype.updateMetrics = async function(metrics) {
     ...metrics,
     updatedAt: new Date().toISOString()
   };
+  this.changed('metrics', true);
   await this.save();
 };
 
